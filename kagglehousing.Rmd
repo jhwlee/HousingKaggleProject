@@ -1,0 +1,389 @@
+---
+title: "HouseReport"
+author: "Joy Lee"
+date: "12/14/2018"
+output: pdf_document
+---
+
+### Introduction
+*(a)*
+
+The goal of the House Price Kaggle Competition was to predict house prices for 1459 houses using 1460 training observations with 79 predictors. Much of the data needed to be recoded, as a large number of the data were coded as NA, some of which were missing observations and others which stood for "feature does not exist" (e.g. NA for the Alley variable when the house didn't have alley access). After recoding the data, I planned on using multiple imputation with mice(). After the data was cleaned, I planned on doing some exploratory analysis and checking to see if linear methods like LASSO are viable or not. If they were, I planned on trying to make multiple different models and then averaging the results. Ultimately, linear models performed poorly, so I focusd on creating a model using boosted trees.
+
+### Model
+*(b)*
+
+```{r}
+train.original <- read.csv("train.csv")
+test.original <- read.csv("test.csv")
+alldata <- test.original
+alldata <- rbind(train.original[,-81], alldata) 
+```
+
+To clean the data, I first combined both the training and testing data so that the data only needed to be recoded once and all of the data could be used for imputation. I recoded the NA's for all the categorical variables where the NA meant that the house did not have the structure according to the data description as seen below. I also converted some of the numeric variables to factors, such as YrGarageBlt, since this numeric variable had many NA that stood for "None".
+
+```{r}
+alldata$MSSubClass <- as.factor(alldata$MSSubClass)
+alldata$MoSold <- as.factor(alldata$MoSold)
+alldata$YrSold <- as.factor(alldata$YrSold)
+
+alldata$Alley <- as.character(alldata$Alley)
+alldata$Alley <- as.factor(ifelse(is.na(alldata$Alley), "None", alldata$Alley))
+
+alldata$BsmtQual <- as.character(alldata$BsmtQual)
+alldata$BsmtQual <- as.factor(ifelse(is.na(alldata$BsmtQual), "None", alldata$BsmtQual))
+
+alldata$BsmtCond <- as.character(alldata$BsmtCond)
+alldata$BsmtCond <- as.factor(ifelse(is.na(alldata$BsmtCond), "None", alldata$BsmtCond))
+
+alldata$BsmtExposure <- as.character(alldata$BsmtExposure)
+alldata$BsmtExposure <- as.factor(ifelse(is.na(alldata$BsmtExposure), "None", alldata$BsmtExposure))
+
+alldata$BsmtFinType1 <- as.character(alldata$BsmtFinType1)
+alldata$BsmtFinType1 <- as.factor(ifelse(is.na(alldata$BsmtFinType1), "None", alldata$BsmtFinType1))
+
+alldata$BsmtFinType2 <- as.character(alldata$BsmtFinType2)
+alldata$BsmtFinType2 <- as.factor(ifelse(is.na(alldata$BsmtFinType2), "None", alldata$BsmtFinType2))
+
+alldata$FireplaceQu <- as.character(alldata$FireplaceQu)
+alldata$FireplaceQu <- as.factor(ifelse(is.na(alldata$FireplaceQu), "None", alldata$FireplaceQu))
+
+alldata$GarageType <- as.character(alldata$GarageType)
+alldata$GarageType <- as.factor(ifelse(is.na(alldata$GarageType), "None", alldata$GarageType))
+
+alldata$GarageFinish <- as.character(alldata$GarageFinish)
+alldata$GarageFinish <- as.factor(ifelse(is.na(alldata$GarageFinish), "None", alldata$GarageFinish))
+
+alldata$GarageQual <- as.character(alldata$GarageQual)
+alldata$GarageQual <- as.factor(ifelse(is.na(alldata$GarageQual), "None", alldata$GarageQual))
+
+alldata$GarageCond <- as.character(alldata$GarageCond)
+alldata$GarageCond <- as.factor(ifelse(is.na(alldata$GarageCond), "None", alldata$GarageCond))
+
+alldata$PoolQC <- as.character(alldata$PoolQC)
+alldata$PoolQC <- as.factor(ifelse(is.na(alldata$PoolQC), "None", alldata$PoolQC))
+
+alldata$Fence <- as.character(alldata$Fence)
+alldata$Fence <- as.factor(ifelse(is.na(alldata$Fence), "None", alldata$Fence))
+
+alldata$MiscFeature <- as.character(alldata$MiscFeature)
+alldata$MiscFeature <- as.factor(ifelse(is.na(alldata$MiscFeature), "None", alldata$MiscFeature))
+
+```
+
+Many of the levels in the categorical variables needed to be combined due to having very few observations with that level, which makes cross validation difficult due to the risk of the training set not including the particular level and then causing the predict() function to fail. When the number of observations in a level were less than 40 I combined them. Unordered variables with many levels with a small number of observations were grouped together into an "other" level. For example, in GarageType there were only 15 Carports in all of the data, 23 2Types, and 36 basement types, so these were all combined into an "other" category. I checked that the distributions and means for the observations in the new "other" level did not have widely differing values using boxplots. 
+
+Variables like GarageQual that had an order were grouped according to the next nearest level, which in this case meant Ex (excellent), Gd (good), and TA (average/typical) were grouped together and Fa (fair) and Po (poor) were in the other group. Finally, for GarageYrBlt, one of the observations was clearly entered incorrectly as 2207. I chose to directly change it to 2007 instead of leaving it as NA to be imputed later because it seemed fairly clear that it was meant to be 2007 since that was also the same value for the year the house was built. The full code and results can be found in the Appendix.
+
+I also considered changing variables such as the number of bathrooms or the number of bedrooms above ground into factors, particularly for imputation purposes to avoid having non-integer values for the number of rooms in a house, but ultimately chose not to because only two observations in BsmtFullBath and  BsmtHalfBath had missing values.
+
+```{r}
+library(ggplot2)
+summary(alldata$GarageType)
+ggplot(train.original) +
+  geom_violin(aes(x=GarageType, y=SalePrice))
+
+levels(alldata$GarageType) <- list(Attchd="Attchd", BuiltIn="BuiltIn", Detchd="Detchd", None="None", Other=c("2Types", "Basment", "CarPort"))
+summary(alldata$GarageType)
+
+summary(alldata$GarageQual)
+
+levels(alldata$GarageQual) <- list(None="None", TA=c("Ex", "Gd", "TA"), Fa=c("Fa", "Po"))
+summary(alldata$GarageQual)
+
+summary(alldata$GarageYrBlt)
+head(alldata$GarageYrBlt[alldata$GarageYrBlt== 2207])
+alldata$GarageYrBlt[alldata$GarageYrBlt== 2207] <- 2007
+alldata$GarageYrBlt <- cut(alldata$GarageYrBlt, breaks=c(1800, 1929, 1939, 1949, 1959, 1969, 1974, 1979, 1984, 1989, 1994, 1999, 2003, 2006, 2011))
+summary(alldata$GarageYrBlt)
+```
+After the initial data cleaning steps, most of the variables did not have any missing observations or only had one or two except for LotFrontage which was missing 486 observations. 
+```{r}
+sapply(alldata, function(x) { sum(is.na(x)) })
+```
+The missing LotFrontage values did not follow a pattern with the other Lot variables (Missing lot frontage did not equal a lot area of 0 or a particular type of Lot Shape or Lot Configuration) so the NA values were not changed. 
+```{r}
+library(dplyr)
+sample_n(alldata[is.na(alldata$LotFrontage),], 15)$LotArea
+
+sample_n(alldata[is.na(alldata$LotFrontage),], 15)$LotShape
+sample_n(alldata[is.na(alldata$LotFrontage),], 15)$LotConfig
+```
+
+I then used mice() for multiple imputations. I used the random forest method since it can handle both categorical and numerical data and created 10 data sets.
+
+```{r, eval=FALSE, echo=TRUE}
+library(mice)
+library(dplyr)
+
+
+exclude <- c("Id")
+include <- setdiff(names(alldata), exclude)
+
+alldata_raw <- alldata[,include]
+
+imp.alldata <- mice(alldata_raw, m=10, method='rf', printFlag=FALSE, seed=1)
+imp.alldata1 <- imp.alldata   # copy for safe keeping
+```
+
+Next, I separated the testing and training data for each dataset and randomly assigned each observation in the training set to a fold for cross validation. A list for each set of training and testing data sets were created and saved.
+
+```{r, eval=FALSE}
+set.seed(1)
+fold <- sample(1:10, nrow(train.original), replace = TRUE)
+all_complete1 <- mice::complete(imp.alldata, 1)
+train_complete1 <- all_complete1[1:1460,]
+train_complete1$SalePrice <- train.original$SalePrice
+train_complete1$fold <- fold
+all_complete2 <- mice::complete(imp.alldata, 2)
+train_complete2 <- all_complete2[1:1460,]
+train_complete2$SalePrice <- train.original$SalePrice
+train_complete2$fold <- fold
+all_complete3 <- mice::complete(imp.alldata, 3)
+train_complete3 <- all_complete3[1:1460,]
+train_complete3$SalePrice <- train.original$SalePrice
+train_complete3$fold <- fold
+all_complete4 <- mice::complete(imp.alldata, 4)
+train_complete4 <- all_complete4[1:1460,]
+train_complete4$SalePrice <- train.original$SalePrice
+train_complete4$fold <- fold
+all_complete5 <- mice::complete(imp.alldata, 5)
+train_complete5 <- all_complete5[1:1460,]
+train_complete5$SalePrice <- train.original$SalePrice
+train_complete5$fold <- fold
+all_complete6 <- mice::complete(imp.alldata, 6)
+train_complete6 <- all_complete6[1:1460,]
+train_complete6$SalePrice <- train.original$SalePrice
+train_complete6$fold <- fold
+all_complete7 <- mice::complete(imp.alldata, 7)
+train_complete7 <- all_complete7[1:1460,]
+train_complete7$SalePrice <- train.original$SalePrice
+train_complete7$fold <- fold
+all_complete8 <- mice::complete(imp.alldata, 8)
+train_complete8 <- all_complete8[1:1460,]
+train_complete8$SalePrice <- train.original$SalePrice
+train_complete8$fold <- fold
+all_complete9 <- mice::complete(imp.alldata, 9)
+train_complete9 <- all_complete9[1:1460,]
+train_complete9$SalePrice <- train.original$SalePrice
+train_complete9$fold <- fold
+all_complete10 <- mice::complete(imp.alldata, 10)
+train_complete10 <- all_complete10[1:1460,]
+train_complete10$SalePrice <- train.original$SalePrice
+train_complete10$fold <- fold
+
+all_train <- list(train_complete1, train_complete2, train_complete3, train_complete4, train_complete5, train_complete6, train_complete7, train_complete8, train_complete9, train_complete10)
+
+
+test_complete1 <- all_complete1[1461:nrow(all_complete1),]
+test_complete2 <- all_complete2[1461:nrow(all_complete2),]
+test_complete3 <- all_complete3[1461:nrow(all_complete3),]
+test_complete4 <- all_complete4[1461:nrow(all_complete4),]
+test_complete5 <- all_complete5[1461:nrow(all_complete5),]
+test_complete6 <- all_complete5[1461:nrow(all_complete6),]
+test_complete7 <- all_complete5[1461:nrow(all_complete7),]
+test_complete8 <- all_complete5[1461:nrow(all_complete8),]
+test_complete9 <- all_complete5[1461:nrow(all_complete9),]
+test_complete10 <- all_complete5[1461:nrow(all_complete10),]
+
+all_test <- list(test_complete1, test_complete2, test_complete3, test_complete4, test_complete5, test_complete6, test_complete7, test_complete8, test_complete9, test_complete10)
+
+#save(all_train, file="all_train.RData")
+#save(all_test, file="all_test.RData")
+```
+
+```{r, echo = FALSE}
+load("all_train.RData")
+load("all_test.RData")
+train_complete1 <-as.data.frame(all_train[1]) 
+```
+
+#### Exploratory Analysis
+```{r}
+library(plyr)
+library(dplyr)
+train_complete1.factors <- c()
+i <- 1
+for (j in 1:length(train_complete1)) {
+  if (is.factor(train_complete1[,j]) == TRUE){
+    train_complete1.factors[i] <- names(train_complete1)[j]
+    i <- i + 1
+  }
+}
+train_complete1.factors <- train_complete1[,train_complete1.factors]
+
+i <- 1
+train_complete1.numeric <- c()
+for (j in 1:length(train_complete1)) {
+  if (is.numeric(train_complete1[,j]) == TRUE){
+    train_complete1.numeric[i] <- names(train_complete1)[j]
+    i <- i + 1
+  }
+}
+train_complete1.numeric <- train_complete1[,train_complete1.numeric]
+
+```
+
+```{r}
+# for (i in 1:length(train_complete1.numeric)){
+#   plot(x=train_complete1.numeric[,i], y=train_complete1$SalePrice)
+#   title(main=names(train_complete1.numeric)[i])
+# }
+```
+
+After plotting the numeric variables against SalePrice, while some of the variables seemed to have linear relationships with SalePrice, others like BsmtFinSF1 clearly did not.
+```{r}
+plot(train_complete1$LotFrontage, train_complete1$SalePrice)
+plot(train_complete1$MasVnrArea, train_complete1$SalePrice)
+plot(train_complete1$BsmtFinSF1, train_complete1$SalePrice)
+```
+
+The rest of the graphs can be found in the Appendix.
+
+The best elastic net model that averaged the results from 2 different training data sets used an alpha of .1 and was very close to a Ridge Regression Model. It had an error rate of 0.1443, which was comparable to the random forest model without any tuning, which had an error rate of 0.1449. 
+
+```{r}
+set.seed(1)
+library(glmnet)
+
+ENy <- data.frame(set1=rep(0, 1460), set2=rep(0, 1460))
+
+mse <- c()
+logmse <- c()
+alphas <- seq(0, 1, by=.1)
+#alphas <- c(0,1)
+for (a in 1:length(alphas)){  
+ for (set in 1:2){ # using 2 sets because it takes so long
+  train_complete <- as.data.frame(all_train[set])
+  for (i in 1:10){
+    
+    train <- train_complete[train_complete$fold !=i,1:76]
+    test <- train_complete[train_complete$fold == i,1:76]
+    
+    fit <- cv.glmnet(x=model.matrix(SalePrice~.,train)[,-1], y=as.matrix(train$SalePrice), alpha=alphas[a])
+    
+    train_complete$yhat[train_complete1$fold==i] <- predict(fit, s=fit$lambda.min, model.matrix(SalePrice~.,test)[,-1])
+  
+  }
+  
+  ENy[,set] <- train_complete$yhat
+}
+
+ENy$avg <- rowMeans(ENy)
+
+mse[a] <- mean((train_complete$SalePrice - ENy$avg)^2)
+logmse[a] <- sqrt(mean((log(1+train_complete$SalePrice) - log(1+ENy$avg))^2)) 
+print(mean((train_complete$SalePrice - ENy$avg)^2))
+print(sqrt(mean((log(1+train_complete$SalePrice) - log(1+ENy$avg))^2)))
+}
+
+```
+
+
+```{r}
+set.seed(1)
+library(randomForest)
+
+RFy <- data.frame(set1=rep(0, 1460), set2=rep(0, 1460))
+for (set in 1:2){
+  train_complete1 <- as.data.frame(all_train[set])
+  for (i in 1:10){
+    
+    train <- train_complete1[train_complete1$fold !=i,1:76]
+    test <- train_complete1[train_complete1$fold == i,1:76]
+    
+    fit <- randomForest(SalePrice ~., data=train)
+    train_complete1$yhat[train_complete1$fold==i] <- predict(fit, test)
+  }
+  
+  RFy[,set] <- train_complete1$yhat
+}
+
+RFy$avg <- rowMeans(RFy)
+
+mean((train_complete1$SalePrice - RFy$avg)^2)
+sqrt(mean((log(1+train_complete1$SalePrice) - log(1+RFy$avg))^2))
+```
+
+
+Then I focused on a boosted tree model, which became the final model.
+I used cross validation to tune the parameters. Due to the number of parameters and how long the code took to run, I created multiple for loops. 
+```{r}
+library(gbm)
+
+BTy <- data.frame(set1=rep(0, 1460))
+
+param <- expand.grid(idepth=c(2,4,6), shrink = c(.001, .01, .1), ntree = 4000)  
+mse <- c()
+logmse <- c()
+
+set.seed(1)
+for (p in 1:nrow(param)){  
+  # only using 1 dataset because it takes so long
+  train_complete <- as.data.frame(all_train[1])
+  for (i in 1:10){
+    train <- train_complete[train_complete$fold !=i,1:76]
+    test <- train_complete[train_complete$fold == i,1:76]
+    
+    fit <- gbm(SalePrice ~., data=train, n.trees=param$ntree[p], shrinkage = param$shrink[p], interaction.depth = param$idepth[p], distribution="gaussian")
+    train_complete$yhat[train_complete$fold==i] <- predict(fit, test, n.trees = param$ntree[p])
+  }
+  
+  mse[p] <- mean((train_complete$SalePrice - train_complete$yhat)^2)
+  logmse[p] <- sqrt(mean((log(1+train_complete$SalePrice) - log(1+train_complete$yhat))^2)) 
+
+}
+param$logmse <- logmse
+param
+```
+
+```{r}
+#BTy <- data.frame(set1=rep(0, 1460), set2=rep(0, 1460), set3=rep(0, 1460), set4=rep(0, 1460), set5=rep(0, 1460))
+
+param <- expand.grid(idepth=c(4,5), shrink = c(.005, .01), ntree = c(4000, 5000))
+mse <- c()
+logmse <- c()
+
+set.seed(1)
+for (p in 1:nrow(param)){  
+  # only using 1 imputation set cause it takes so long
+  train_complete <- as.data.frame(all_train[1])
+  for (i in 1:10){
+    train <- train_complete[train_complete$fold !=i,1:76]
+    test <- train_complete[train_complete$fold == i,1:76]
+    
+    fit <- gbm(SalePrice ~., data=train, n.trees=param$ntree[p], shrinkage = param$shrink[p], interaction.depth = param$idepth[p], distribution="gaussian")
+    train_complete$yhat[train_complete$fold==i] <- predict(fit, test, n.trees = param$ntree[p])
+  }
+  
+  mse[p] <- mean((train_complete$SalePrice - train_complete$yhat)^2)
+  logmse[p] <- sqrt(mean((log(1+train_complete$SalePrice) - log(1+train_complete$yhat))^2)) 
+
+}
+param$logmse <- logmse
+param
+```
+
+### Results
+
+Although the model with the lowest cross validation error rate was the one with an interaction dpeth of 5, a shrinkage factor of .005, and 6000 trees, the model with the best score on kaggle was a boosted tree model that averaged the predictions from 10 imputed data sets with a shrinkage parameter set to .01, the the interaction depth was set to 4, and used 4000 trees used. All of the models in the second set had very similar errors rates, so it is not surprising that one of the less complex models fit best, especially once the predictions for the 10 different data sets were averaged together.T
+Boosted Tree Predictions
+```{r, eval = FALSE}
+library(gbm)
+BTpreds <- data.frame(set1=rep(0, 1459), set2=rep(0, 1459), set3=rep(0, 1459), set4=rep(0, 1459), set5=rep(0, 1459), set6=rep(0, 1459), set7=rep(0, 1459), set8=rep(0, 1459), set9=rep(0, 1459), set10=rep(0, 1459))
+
+for (set in 1:10){
+  train <- as.data.frame(all_train[set])[,1:76]
+  test <- as.data.frame(all_test[set])
+  fit <- gbm(SalePrice ~., data=train, n.trees=4000, shrinkage = .01, interaction.depth =4, distribution="gaussian")
+  BTpreds[,set] <- predict(fit, test, n.trees = 4000)
+}
+
+BTpreds$avg <- rowMeans(BTpreds)
+
+testpreds <- data.frame(Id = test.original$Id, SalePrice=BTPreds$avg)
+write.csv(testpreds, "Finalsubmission.csv", row.names = FALSE)
+```
+
+Cross Validation Error: 0.127 (when using only 1 dataset)
+Final Score: 0.12211
